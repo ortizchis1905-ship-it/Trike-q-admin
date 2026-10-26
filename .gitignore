@@ -1,0 +1,23 @@
+﻿# Credentials and local configuration
+/config/
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Composer dependencies
+/vendor/
+
+# Generated exports and logs
+*.xlsx
+*.csv
+*.log
+/exports/
+/backups/
+
+# Editor and operating system files
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
