@@ -34,7 +34,37 @@ function tqHeaderRequest($path, $method = 'GET', $data = null) {
     if (strtoupper($method) === 'POST' && $data === null) $data = new stdClass();
     return trikeqSupabaseHttp($noticeBase.'/'.$path, $method, $data, $noticeToken);
 }
-$auth = tqHeaderRequest('auth/v1/user');
+
+// Execute independent requests together. Each still uses the current user's JWT.
+function tqHeaderBatch($requests) {
+    global $noticeBase,$noticeToken,$SUPABASE_KEY;
+    if(!function_exists('curl_multi_init')) {
+        $out=[];foreach($requests as $key=>$path)$out[$key]=tqHeaderRequest($path);return $out;
+    }
+    $multi=curl_multi_init();$handles=[];$counts=[];$out=[];
+    foreach($requests as $key=>$path) {
+        $handle=curl_init($noticeBase.'/'.$path);
+        if($handle===false){$out[$key]=['success'=>false,'status'=>0,'data'=>[]];continue;}
+        $headers=['apikey: '.$SUPABASE_KEY,'Authorization: Bearer '.$noticeToken,'Accept: application/json'];
+        if($key==='unread_count')$headers[]='Prefer: count=exact';
+        curl_setopt_array($handle,[CURLOPT_RETURNTRANSFER=>true,CURLOPT_HTTPHEADER=>$headers,CURLOPT_CONNECTTIMEOUT=>10,CURLOPT_TIMEOUT=>30,
+            CURLOPT_HEADERFUNCTION=>static function($ch,$line)use(&$counts,$key){if(preg_match('~^Content-Range:\s*[^/]+/(\d+)~i',$line,$match))$counts[$key]=(int)$match[1];return strlen($line);}]);
+        $handles[$key]=$handle;curl_multi_add_handle($multi,$handle);
+    }
+    try {
+        do{$code=curl_multi_exec($multi,$running);if($running && $code===CURLM_OK){if(curl_multi_select($multi,1.0)===-1)usleep(1000);}}while($running && $code===CURLM_OK);
+        foreach($handles as $key=>$handle){$raw=curl_multi_getcontent($handle);$http=(int)curl_getinfo($handle,CURLINFO_HTTP_CODE);$decoded=json_decode((string)$raw,true);$ok=curl_errno($handle)===0&&$http>=200&&$http<300&&is_array($decoded);
+            $out[$key]=['success'=>$ok,'status'=>$http,'data'=>$decoded??[],'error'=>$ok?null:'Supabase request could not be completed.'];
+            if(isset($counts[$key]))$out[$key]['exact_count']=$counts[$key];
+        }
+    } finally {foreach($handles as $handle){curl_multi_remove_handle($multi,$handle);curl_close($handle);}curl_multi_close($multi);}
+    return $out;
+}
+$identityPaths=['auth'=>'auth/v1/user'];
+$sessionUid=$_SESSION['user_id']??'';
+if(tqHeaderUuid($sessionUid))$identityPaths['membership']='rest/v1/admin?'.http_build_query(['select'=>'name,role,is_active,profile_picture_url','user_id'=>'eq.'.$sessionUid,'limit'=>1],'','&',PHP_QUERY_RFC3986);
+$identity=tqHeaderBatch($identityPaths);$auth=$identity['auth'];$identityToken=$noticeToken;
+
 if (empty($auth['success']) && (int)($auth['status'] ?? 0) === 401) {
     // Serialize token refreshes. Another request may already have rotated the token.
     if (session_status() !== PHP_SESSION_ACTIVE) session_start();
@@ -55,7 +85,7 @@ if (empty($auth['success']) || !tqHeaderUuid($uid)) {
     $expired = (int)($auth['status'] ?? 0) === 401;
     tqHeaderReply($expired ? 401 : 503, ['error'=>$expired ? 'Please sign in again.' : 'Account verification is temporarily unavailable. Try again.']);
 }
-$membership = tqHeaderRequest('rest/v1/admin?'.http_build_query([
+$membership=($uid===$sessionUid && $identityToken===$noticeToken && isset($identity['membership']))?$identity['membership']:tqHeaderRequest('rest/v1/admin?'.http_build_query([
     'select'=>'name,role,is_active,profile_picture_url','user_id'=>'eq.'.$uid,'limit'=>1,
 ], '', '&', PHP_QUERY_RFC3986));
 if (empty($membership['success'])) tqHeaderReply(503, ['error'=>'Administrator verification is temporarily unavailable. Try again.']);
@@ -100,10 +130,18 @@ $filters = [
     'recipient_id'=>'eq.'.$uid,'order'=>'created_at.desc,id.desc','limit'=>51,
 ];
 if ($filter === 'unread') $filters['read_at'] = 'is.null';
-$list = tqHeaderRequest('rest/v1/tmu_notifications?'.http_build_query($filters, '', '&', PHP_QUERY_RFC3986));
+$inbox=tqHeaderBatch([
+ 'list'=>'rest/v1/tmu_notifications?'.http_build_query($filters,'','&',PHP_QUERY_RFC3986),
+ 'unread_count'=>'rest/v1/tmu_notifications?'.http_build_query(['select'=>'id','recipient_id'=>'eq.'.$uid,'read_at'=>'is.null','limit'=>0],'','&',PHP_QUERY_RFC3986)
+]);
+$list=$inbox['list'];
 if (empty($list['success']) || !is_array($list['data'])) tqHeaderReply(503, ['error'=>'Notifications could not be loaded. Try again.']);
 // Count all unread rows, not just the displayed page. Advance by actual returned rows
 // to respect a project-specific REST row limit. Never present a partial count as exact.
+// Prefer one exact server-side count; retain the compatible pagination fallback.
+if(!empty($inbox['unread_count']['success']) && isset($inbox['unread_count']['exact_count'])) {
+ $unread=$inbox['unread_count']['exact_count'];
+} else {
 $unread = 0; $offset = 0; $finished = false;
 for ($page = 0; $page < 100; $page++) {
     $count = tqHeaderRequest('rest/v1/tmu_notifications?'.http_build_query([
@@ -116,6 +154,7 @@ for ($page = 0; $page < 100; $page++) {
     $unread += $size; $offset += $size;
 }
 if (!$finished) tqHeaderReply(503, ['error'=>'There are too many unread notifications to count in this request. Try again later.']);
+}
 // Enrich only these inbox items, using the current TMU JWT and existing RLS.
 // Private complainant contact details are never copied into the bell.
 $detailsUnavailable = false;
@@ -127,13 +166,18 @@ foreach (array_slice($list['data'],0,50) as $row) {
     if (isset($recordIds[$target]) && tqHeaderUuid($row['target_id'] ?? null)) $recordIds[$target][$row['target_id']] = $row['target_id'];
     if (tqHeaderUuid($row['toda_id'] ?? null)) $organizationIds[$row['toda_id']] = $row['toda_id'];
 }
-foreach (['complaints'=>['complaints','id','id,driver_name,complaint_type,status,toda_id,drivers(name,tricycle_number)'],
-          'president_requests'=>['toda_president_accounts','user_id','user_id,full_name,status,toda_id']] as $target=>$source) {
+$detailPaths=[];$detailSources=['complaints'=>['complaints','id','id,driver_name,complaint_type,status,toda_id,drivers(name,tricycle_number)'],
+          'president_requests'=>['toda_president_accounts','user_id','user_id,full_name,status,toda_id']];
+foreach($detailSources as $target=>$source) {
     if (!$recordIds[$target]) continue;
     [$table,$key,$select] = $source;
-    $detailResult = tqHeaderRequest('rest/v1/'.$table.'?'.http_build_query([
+    $detailPaths[$target]='rest/v1/'.$table.'?'.http_build_query([
         'select'=>$select,$key=>'in.('.implode(',',array_values($recordIds[$target])).')','limit'=>50,
-    ],'', '&',PHP_QUERY_RFC3986));
+    ],'', '&',PHP_QUERY_RFC3986);
+}
+$detailResults=tqHeaderBatch($detailPaths);
+foreach($detailResults as $target=>$detailResult){
+    $key=$detailSources[$target][1];
     if (empty($detailResult['success']) || !is_array($detailResult['data'])) { $detailsUnavailable=true; continue; }
     foreach ($detailResult['data'] as $detail) {
         if (!tqHeaderUuid($detail[$key] ?? null)) continue;
@@ -179,4 +223,6 @@ tqHeaderReply(200, [
     'items'=>$items,'unread'=>$unread,'has_more'=>count($list['data'])>50,
     'filter'=>$filter,'user_id'=>$uid,'csrf'=>$noticeCsrf,'unavailable'=>false,
     'details_unavailable'=>$detailsUnavailable,
+    'profile'=>['name'=>trim((string)($admin['name']??''))?:'TMU Administrator','role'=>($admin['role']??'')==='super_admin'?'Super Admin':'TMU Administrator','photo'=>$admin['profile_picture_url']??null,'user_id'=>$uid],
 ]);
+

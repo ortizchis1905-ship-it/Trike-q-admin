@@ -5,7 +5,6 @@ function tqReportDataLoad() {
     $sources = [
         'drivers'=>'select=*&order=name.asc,id.asc',
         'toda_organizations'=>'select=id,name&order=name.asc,id.asc',
-        'dues'=>'select=*&order=collection_date.desc,id.asc',
         'complaints'=>'select=*&order=created_at.desc,id.asc',
     ];
     $data=['ready'=>[],'errors'=>[]];
@@ -48,12 +47,12 @@ function tqReportComplaintStatus($value) {
 }
 function tqReportOverview($data) {
     $s=['drivers'=>count($data['drivers']),'organizations'=>count($data['toda_organizations']),
-        'complaints'=>count($data['complaints']),'dues'=>count($data['dues']),'collections'=>0,
+        'complaints'=>count($data['complaints']),
         'active'=>0,'inactive'=>0,'other_driver_status'=>0,
         'renewals'=>['Valid'=>0,'Due Soon'=>0,'Expired'=>0,'No expiry date'=>0],
         'complaint_status'=>['Pending'=>0,'Resolved'=>0,'Dismissed'=>0],
-        'driver_toda'=>[],'collection_toda'=>[],'monthly'=>[],'complaint_types'=>[]];
-    foreach($data['toda_organizations'] as $t){$s['driver_toda'][$t['id']]=['name'=>$t['name'],'value'=>0];$s['collection_toda'][$t['id']]=['name'=>$t['name'],'value'=>0];}
+        'driver_toda'=>[],'complaint_types'=>[]];
+    foreach($data['toda_organizations'] as $t){$s['driver_toda'][$t['id']]=['name'=>$t['name'],'value'=>0];}
     foreach($data['drivers'] as $d){
         $status=strtolower(trim((string)($d['status']??'')));
         if($status==='active')$s['active']++;elseif($status==='inactive')$s['inactive']++;else $s['other_driver_status']++;
@@ -62,15 +61,6 @@ function tqReportOverview($data) {
         $s['driver_toda'][$key]['value']++;
         $s['renewals'][tqReportRenewal($d['franchise_expiry_date']??null)]++;
     }
-    foreach($data['dues'] as $d){
-        $amount=(float)($d['amount']??0);$s['collections']+=$amount;
-        $key=isset($data['toda_names'][$d['toda_id']??''])?$d['toda_id']:'unassigned';
-        if(!isset($s['collection_toda'][$key]))$s['collection_toda'][$key]=['name'=>'Unassigned / unavailable','value'=>0];
-        $s['collection_toda'][$key]['value']+=$amount;
-        $date=tqReportDate($d['collection_date']??null);
-        if($date){$month=$date->format('Y-m');if(!isset($s['monthly'][$month]))$s['monthly'][$month]=['name'=>$date->format('M Y'),'value'=>0];$s['monthly'][$month]['value']+=$amount;}
-    }
-    ksort($s['monthly']);
     foreach($data['complaints'] as $c){
         $s['complaint_status'][tqReportComplaintStatus($c['status']??'Pending')]++;
         $types=is_array($c['complaint_types']??null)&&$c['complaint_types']?$c['complaint_types']:[$c['complaint_type']??'Unspecified'];

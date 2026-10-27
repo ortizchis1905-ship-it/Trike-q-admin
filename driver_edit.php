@@ -15,3 +15,4 @@ foreach (['photo_saved','photo_warning','saved'] as $flag) {
 }
 header('Location: driver_view.php?' . http_build_query($query, '', '&', PHP_QUERY_RFC3986), true, 302);
 exit;
+

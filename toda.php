@@ -76,7 +76,8 @@ function e($value)
 // =====================================================
 
 $errorMessage = "";
-$successMessage = "";
+$successMessage = (string)($_SESSION['tq_toda_delete_notice']??'');
+unset($_SESSION['tq_toda_delete_notice']);
 
 $name = "";
 $address = "";
@@ -95,7 +96,21 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
     // ADD TODA
     // =================================================
 
-    if ($action === "add_toda") {
+    if ($action === 'delete_toda') {
+        $deleteId=is_string($_POST['id']??null)?trim($_POST['id']):'';
+        if(!preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i',$deleteId)) {
+            $errorMessage='Choose a valid TODA organization.';
+        } else {
+            $deleted=supabaseRequest('rpc/trikeq_delete_empty_toda','POST',['p_toda_id'=>$deleteId]);
+            if(!empty($deleted['success']) && ($deleted['data']??null)===true) {
+                $_SESSION['tq_toda_delete_notice']='TODA organization deleted successfully.';
+                header('Location: toda.php',true,303);exit;
+            }
+            $message=$deleted['error']??($deleted['data']['message']??'');
+            $errorMessage=is_string($message)&&$message!==''?$message:'Unable to delete this organization. Install toda_delete.sql first, then try again.';
+        }
+    }
+    elseif ($action === "add_toda") {
 
         $name =
             trim(
@@ -1318,7 +1333,7 @@ foreach ($todas as $toda) {
 <script src="admin-nav.js?v=<?= (int) @filemtime(__DIR__.'/admin-nav.js') ?>" defer></script>
 <style>
 #tqTodaSearchBar{display:flex;align-items:end;gap:12px;flex-wrap:wrap}#tqTodaSearchBar .tq-toda-search-field{flex:1 1 280px;min-width:200px}.tq-toda-sort-field{flex:0 1 180px}.tq-toda-sort-field label{display:block;font:600 13px Arial;color:#475569;margin-bottom:6px}.tq-toda-sort-field select{width:100%;height:40px;padding:8px 10px;border:1px solid #cbd5e1;border-radius:8px;background:#fff;color:#334155;font:14px Arial}#tqTodaListTable td{font-size:16px;line-height:1.5}#tqTodaListTable th{font-size:14px}#tqTodaListTable td strong{font-weight:600}.tq-toda-filter-card{cursor:pointer;border:1px solid transparent}.tq-toda-filter-card[aria-pressed=true]{border-color:#f97316;background:#fff7ed}.tq-toda-filter-card:focus-visible{outline:3px solid #fed7aa;outline-offset:2px}#tqTodaListCount{color:#64748b;font:14px Arial;white-space:nowrap}
-</style></head>
+</style><style>.tq-delete-toda-form{display:inline-block;margin:0 0 0 6px;vertical-align:middle}.tq-delete-toda-button{display:inline-flex;align-items:center;justify-content:center;gap:5px;min-height:32px;padding:6px 9px;border:1px solid #fecaca;border-radius:7px;background:#fef2f2;color:#b91c1c;font:600 13px Arial,Helvetica,sans-serif;cursor:pointer}.tq-delete-toda-button:hover{background:#fee2e2}.tq-delete-toda-button:focus-visible{outline:2px solid #dc2626;outline-offset:2px}</style></head>
 
 
 <body>
@@ -1814,6 +1829,12 @@ foreach ($todas as $toda) {
                                                     data-status="<?= $isActive ? "1" : "0" ?>"
                                                     onclick="openEditModal(this)"
                                                 ><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m16 3 5 5-12 12-6 1 1-6Z"/><path d="m14 5 5 5"/></svg></button>
+<form method="post" action="toda.php" class="tq-delete-toda-form" data-delete-toda-name="<?=e($toda['name']??'this organization')?>">
+<input type="hidden" name="tq_csrf" value="<?=tqEscape(tqCsrf())?>">
+<input type="hidden" name="action" value="delete_toda"><input type="hidden" name="id" value="<?=e($toda['id'])?>">
+<button type="submit" class="tq-delete-toda-button" aria-label="Delete <?=e($toda['name']??'TODA organization')?>"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7"/></svg><span>Delete</span></button>
+</form>
+
 
                                             </td>
 
@@ -2161,6 +2182,6 @@ document.addEventListener(
 </script>
 <script>
 (()=>{const table=document.getElementById('tqTodaListTable'),search=document.getElementById('tqTodaListSearch'),sort=document.getElementById('tqTodaSort'),status=document.getElementById('tqTodaStatus'),count=document.getElementById('tqTodaListCount');if(!table||!search)return;const body=table.tBodies[0],rows=Array.from(body.querySelectorAll('[data-org-row]')),cards=Array.from(document.querySelectorAll('[data-toda-filter]'));const empty=document.createElement('tr');empty.innerHTML='<td colspan="5" class="empty">No organizations match your filters.</td>';body.appendChild(empty);const collator=new Intl.Collator(undefined,{sensitivity:'base',numeric:true});function update(){const term=search.value.trim().toLowerCase();let visible=0;rows.sort((a,b)=>{const name=collator.compare(a.cells[0].textContent.trim(),b.cells[0].textContent.trim());if(sort.value==='az')return name;if(sort.value==='za')return -name;const ad=Date.parse(a.dataset.todaCreated)||0,bd=Date.parse(b.dataset.todaCreated)||0;return(sort.value==='oldest'?ad-bd:bd-ad)||name;});for(const row of rows){body.appendChild(row);const text=(row.cells[0].textContent+' '+row.cells[1].textContent).toLowerCase();row.hidden=!(text.includes(term)&&(status.value==='all'||row.dataset.todaStatus===status.value));if(!row.hidden)visible++;}body.appendChild(empty);empty.hidden=visible>0||rows.length===0;count.textContent=visible+' of '+rows.length+' organizations';cards.forEach(card=>card.setAttribute('aria-pressed',String(card.dataset.todaFilter===status.value)));}cards.forEach(card=>{function apply(){status.value=card.dataset.todaFilter;update();}card.addEventListener('click',apply);card.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();apply();}});});search.addEventListener('input',update);sort.addEventListener('change',update);status.addEventListener('change',update);update();})();
-</script></body>
+</script><script>document.querySelectorAll('.tq-delete-toda-form').forEach(form=>form.addEventListener('submit',event=>{const name=form.dataset.deleteTodaName||'this organization';if(!window.confirm('Delete '+name+' permanently? Only organizations with no linked records can be deleted. Use Deactivate to keep its records.'))event.preventDefault();}));</script></body>
 
 </html>

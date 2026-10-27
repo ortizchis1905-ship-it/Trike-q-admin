@@ -1,9 +1,9 @@
-// TRIKE-Q notification header v4 — styled inbox
+// TRIKE-Q notification header v5 — styled inbox
 (function () {
     const endpoint = new URL('admin-header.php', document.currentScript?.src || document.baseURI);
     function start() {
         const header = document.querySelector('.topbar, .top');
-        if (!header || header.querySelector('[data-tq-notification-version="4"]')) return;
+        if (!header || header.querySelector('[data-tq-notification-version="5"]')) return;
         header.dataset.tqReady = '1';
         // Mount synchronously from the account already rendered by PHP.
         const legacy = header.querySelector('.tq-header-account, [data-tq-legacy-account], .admin-top, .admin-box, .admin-info, .admin-label') || (header.classList.contains('top') ? Array.from(header.children).reverse().find(el => el.tagName === 'DIV' && !el.querySelector('h1,h2,.page-title,button')) : null);
@@ -24,7 +24,7 @@
         if (plain) plain.remove();
         // Remove only known old account fragments, preserving headings/menu buttons.
         header.querySelectorAll('.admin-avatar,.admin-top-text').forEach(el => el.remove());
-        const panel = document.createElement('div'); panel.className = 'tq-header-account'; panel.dataset.tqNotificationVersion = '4'; header.append(panel);
+        const panel = document.createElement('div'); panel.className = 'tq-header-account'; panel.dataset.tqNotificationVersion = '5'; header.append(panel);
             document.head.querySelectorAll('style').forEach(node=>{if(node.id==='tq-notification-header-style' || node.textContent.trim().startsWith('.tq-header-account{'))node.remove();});
             const style = document.createElement('style');style.id='tq-notification-header-style';
     style.textContent = `
@@ -236,7 +236,12 @@
             try {
                 const data=await request('notifications');
                 if (!Array.isArray(data.items) || !Number.isInteger(data.unread) || data.unread<0) throw new Error('Replace both header files, then refresh this page.');
-                acceptIdentity(data); items=data.items; unread=data.unread; hasMore=data.has_more===true; detailsUnavailable=data.details_unavailable===true; loaded=true;
+                acceptIdentity(data);
+                if(data.profile && typeof data.profile.name==='string' && typeof data.profile.role==='string' && data.profile.user_id===data.user_id){
+                    account=data.profile;renderAccount(account);
+                    try{sessionStorage.setItem(cacheKey,JSON.stringify({name:account.name,role:account.role,photo:account.photo,user_id:account.user_id}));}catch{}
+                }
+                items=data.items; unread=data.unread; hasMore=data.has_more===true; detailsUnavailable=data.details_unavailable===true; loaded=true;
                 renderInbox();
             } catch (error) {
                 showError(error.message || 'Notifications unavailable. Try Refresh.');
@@ -262,7 +267,7 @@
         document.addEventListener('keydown',event=>{if(event.key==='Escape' && notices.open){notices.open=false;summary.focus();}});
         const refreshWhenVisible=()=>{if(!document.hidden && Date.now()-lastAttempt>5000)void loadNotices();};
         document.addEventListener('visibilitychange',refreshWhenVisible); window.addEventListener('focus',refreshWhenVisible);
-        renderInbox(); void refreshAccount(); void loadNotices();
+        renderInbox(); void loadNotices();
         setInterval(()=>{if(!document.hidden)void loadNotices();},60000);
     }
     if (document.readyState==='loading') document.addEventListener('DOMContentLoaded',start,{once:true}); else start();

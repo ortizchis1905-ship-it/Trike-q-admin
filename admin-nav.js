@@ -7,8 +7,9 @@
     const projectBase = new URL('.', sourceScript && sourceScript.src ? sourceScript.src : window.location.href);
     const sharedUrl = filename => new URL(filename, projectBase).href;
     // Load the current header even when a page still includes an older script.
-    const headerVersion = '20261026-4';
-    if (!document.querySelector('script[data-tq-header-version="'+headerVersion+'"]')) {
+    const headerVersion = '20261027-5';
+    const headerAlreadyIncluded=Array.from(document.scripts).some(node=>{try{return new URL(node.src).pathname===new URL('admin-header.js',projectBase).pathname;}catch{return false;}});
+    if (!headerAlreadyIncluded) {
         const script = document.createElement('script');
         const headerUrl = new URL('admin-header.js', projectBase);
         headerUrl.searchParams.set('v', headerVersion);
@@ -30,12 +31,13 @@
         "dashboard.php": "dashboard",
         "drivers.php": "drivers",
         "driver_edit.php": "drivers",
+        "driver_view.php": "drivers",
         "driver_qr.php": "drivers",
         "driver_profile_upload.php": "drivers",
         "register.php": "register",
         "complaints.php": "complaints",
         "toda_feedback.php": "reports",
-        "dues.php": "dues",
+
         "renewals.php": "renewals",
         "toda.php": "toda",
         "toda_fares.php": "toda_fares",
@@ -56,7 +58,6 @@
                 ["register", "register.php", "＋", "Register"],
                 ["complaints", "complaints.php", "⚠", "Complaint / Violation"],
 
-                ["dues", "dues.php", "₱", "Dues"]
             ]
         },
         {
