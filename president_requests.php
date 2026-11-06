@@ -75,6 +75,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $remarks = inputText($_POST, 'admin_remarks');
     if (!hash_equals($csrf, inputText($_POST, 'csrf_token'))) {
         $errorMessage = 'Your form has expired. Refresh the page and try again.';
+    } elseif (inputText($_POST, 'action') === 'delete_request') {
+        $snapshot = json_decode(inputText($_POST, 'expected_record'), true);
+        if (!isUuid($targetId) || inputText($_POST, 'confirm_delete') !== '1' ||
+            !is_array($snapshot) || ($snapshot['user_id'] ?? '') !== $targetId) {
+            $errorMessage = 'Invalid deletion confirmation. Refresh and try again.';
+        } else {
+            $deleted = supabaseRequest('rpc/trikeq_admin_delete_president_request', 'POST', [
+                'p_user_id' => $targetId, 'p_expected' => $snapshot
+            ]);
+            if (empty($deleted['success']) || ($deleted['data'] ?? null) !== true) {
+                $errorMessage = 'Request was not deleted. ' . ($deleted['error'] ?? 'Refresh and try again.');
+            } else {
+                $_SESSION['president_requests_flash'] = 'President request deleted. The login account was retained.';
+                header('Location: president_requests.php?' . queryString(['status' => $filter]), true, 303);
+                exit;
+            }
+        }
     } elseif (!isUuid($targetId) || !isset($allowedTransitions[$expectedStatus]) ||
         !in_array($nextStatus, $allowedTransitions[$expectedStatus], true)) {
         $errorMessage = 'Invalid review action. Refresh the page and try again.';
@@ -245,6 +262,26 @@ button,.button{display:inline-block;border:0;border-radius:8px;padding:10px 14px
 #tqPresidentRequests .tq-president-remarks .remarks{min-width:160px;max-width:240px;white-space:pre-wrap;overflow-wrap:anywhere;font-size:14px}
 #tqPresidentRequests .tq-president-table .tq-president-empty{text-align:center;padding:30px;color:#64748b}
 </style>
+<style>
+/* Fixed action row; expanded panels occupy the row beneath both buttons. */
+#tqPresidentRequests .tq-president-review-cell{width:272px;min-width:272px;vertical-align:top}
+#tqPresidentRequests .tq-request-actions{display:grid;grid-template-columns:156px 88px;gap:8px;align-items:start}
+#tqPresidentRequests .tq-request-actions>.tq-president-review,
+#tqPresidentRequests .tq-request-actions>.tq-request-delete{display:contents}
+#tqPresidentRequests .tq-request-actions>details>summary{display:inline-flex;align-items:center;justify-content:center;gap:6px;height:36px;padding:0 10px;margin:0;border-radius:7px;font:600 12px Arial,Helvetica,sans-serif;list-style:none;cursor:pointer;white-space:nowrap;box-sizing:border-box}
+#tqPresidentRequests .tq-request-actions>.tq-president-review>summary{grid-column:1;grid-row:1;border:1px solid #fdba74;background:#fff7ed;color:#c2410c}
+#tqPresidentRequests .tq-request-actions>.tq-request-delete>summary{grid-column:2;grid-row:1;border:1px solid #fecaca;background:#fef2f2;color:#b91c1c}
+#tqPresidentRequests .tq-request-actions>details>summary::-webkit-details-marker{display:none}
+#tqPresidentRequests .tq-request-actions>.tq-president-review>summary:hover{background:#ffedd5}
+#tqPresidentRequests .tq-request-actions>.tq-request-delete>summary:hover{background:#fee2e2}
+#tqPresidentRequests .tq-request-actions>details>summary:focus-visible{outline:2px solid #f97316;outline-offset:3px}
+#tqPresidentRequests .tq-request-actions>details>form{grid-column:1 / -1;min-width:0;max-width:none;margin:0;padding:12px;border:1px solid #e2e8f0;border-radius:8px;background:#fff}
+#tqPresidentRequests .tq-request-actions>details:not([open])>form{display:none}
+#tqPresidentRequests .tq-request-actions>.tq-president-review[open]>form{display:block;grid-row:2}
+#tqPresidentRequests .tq-request-actions>.tq-request-delete[open]>form{display:block;grid-row:3;border-color:#fecaca}
+#tqPresidentRequests .tq-request-delete-form p{margin:0 0 8px;font-size:14px;line-height:1.5}
+#tqPresidentRequests .tq-request-confirm{background:#b91c1c;color:#fff}
+</style>
 <!-- Shared TMU header and navigation; refresh versions when the shared files change. -->
 <script src="admin-header.js?v=<?= (int) @filemtime(__DIR__.'/admin-header.js') ?>" data-tq-header="1" defer></script>
 <script src="admin-nav.js?v=<?= (int) @filemtime(__DIR__.'/admin-nav.js') ?>" defer></script>
@@ -347,7 +384,7 @@ button,.button{display:inline-block;border:0;border-radius:8px;padding:10px 14px
 <td><?= e(displayDate($row['created_at'])) ?></td>
 <td><?= e(displayDate($row['reviewed_at'])) ?></td>
 <td><?php if ($row['admin_remarks'] !== ''): ?><details class="tq-president-remarks"><summary>View remarks</summary><p class="remarks"><?= e($row['admin_remarks']) ?></p></details><?php else: ?>—<?php endif; ?></td>
-<td class="tq-president-review-cell">
+<td class="tq-president-review-cell"><div class="tq-request-actions">
 <?php if ($actions): ?><details class="tq-president-review"><summary class="tq-review-toggle">Review / Remarks</summary><form method="POST" class="review-form">
 <input type="hidden" name="csrf_token" value="<?= e($csrf) ?>">
 <input type="hidden" name="user_id" value="<?= e($row['user_id']) ?>">
@@ -363,7 +400,18 @@ button,.button{display:inline-block;border:0;border-radius:8px;padding:10px 14px
 <button type="submit" name="decision" value="<?= e($decision) ?>" class="<?= e(strtolower($label)) ?>"><?= e($label) ?></button>
 <?php endforeach; ?></div>
 <?php if (!$activeToda): ?><p class="muted">Approval is available when the TODA organization is active and its details can be loaded.</p><?php endif; ?>
-</form></details><?php else: ?>—<?php endif; ?></td></tr>
+</form></details><?php endif; ?>
+<details class="tq-request-delete">
+<summary aria-label="Delete request for <?= e($row['full_name']) ?>"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7"/></svg>Delete</summary>
+<form method="POST" class="tq-request-delete-form">
+<input type="hidden" name="action" value="delete_request">
+<input type="hidden" name="csrf_token" value="<?= e($csrf) ?>">
+<input type="hidden" name="user_id" value="<?= e($row['user_id']) ?>">
+<input type="hidden" name="expected_record" value="<?= e(json_encode($row, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)) ?>">
+<p>Delete the request for <strong><?= e($row['full_name']) ?></strong> permanently?</p>
+<p>This removes their TODA President access. Their login account and existing driver, fare and complaint records remain.</p>
+<div class="actions"><button type="submit" name="confirm_delete" value="1" class="tq-request-confirm">Delete request</button><button type="button" onclick="this.closest('details').open=false">Cancel</button></div>
+</form></details></div></td></tr>
 <?php endforeach; ?>
 </tbody></table></div>
 <div class="pagination">

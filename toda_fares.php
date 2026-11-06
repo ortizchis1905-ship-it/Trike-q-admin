@@ -40,10 +40,11 @@ if (!in_array($assessment, $allowed, true)) $assessment = '';
 $search = substr(fareInput($_GET, 'q'), 0, 120);
 $action = fareInput($_POST, 'action', 'review_fare');
 $failedDestination = '';
+$failedFare = '';
 $addOpen = false;
-$orgResult = fareRows('toda_organizations', ['select'=>'id,name,status', 'order'=>'name.asc,id.asc']);
-$organizations = $orgResult['rows']; $names = []; $orgStatus = [];
-foreach ($organizations as $t) { $names[$t['id']]=$t['name']; $orgStatus[$t['id']]=$t['status']; }
+$orgResult = fareRows('toda_organizations', ['select'=>'id,name,address,status', 'order'=>'name.asc,id.asc']);
+$organizations = $orgResult['rows']; $names = []; $orgStatus = []; $terminalAddresses = [];
+foreach ($organizations as $t) { $names[$t['id']]=$t['name']; $terminalAddresses[$t['id']]=trim((string)($t['address']??'')); $orgStatus[$t['id']]=$t['status']; }
 if ($orgResult['error']) $error = $orgResult['error'];
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (!hash_equals($_SESSION['fares_csrf'], fareInput($_POST, 'csrf'))) {
@@ -71,6 +72,49 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $_SESSION['fares_notice'] = $action === 'add_destination' ? 'Destination added to the shared list for all TODAs.' : 'Destination updated.';
                 $returnQuery = query(array_filter(['toda_id'=>$todaId, 'assessment'=>$assessment, 'q'=>$search], fn($v)=>$v !== ''));
                 header('Location: toda_fares.php'.($returnQuery ? '?'.$returnQuery : '').'#destinations'); exit;
+            }
+        }
+    } elseif ($action === 'edit_entry') {
+        $id = fareInput($_POST, 'id');
+        $destinationId = fareInput($_POST, 'destination_id');
+        $failedFare = $id;
+        $failedDestination = $id === '' ? $destinationId : '';
+        $regular = fareInput($_POST, 'regular_fare');
+        $effective = fareInput($_POST, 'effective_date');
+        $date = DateTimeImmutable::createFromFormat('!Y-m-d', $effective);
+        if (($id === '' && $destinationId === '') || ($id !== '' && !fareUuid($id)) || ($destinationId !== '' && !fareUuid($destinationId))) $error = 'Refresh the list before editing.';
+        elseif ($destinationId !== '' && (!in_array(fareInput($_POST,'destination_active'), ['0','1'], true) || preg_match('/^.{1,100}$/us',fareInput($_POST,'destination_name')) !== 1)) $error = 'Enter a destination name and choose a valid status.';
+        elseif ($id !== '' && (!preg_match('/^\d{1,6}(?:\.\d{1,2})?$/D',$regular) || (float)$regular <= 0 || (float)$regular > 999999)) $error = 'Enter a positive fare up to PHP 999,999, with at most two decimal places.';
+        elseif ($id !== '' && (!$date || $date->format('Y-m-d') !== $effective)) $error = 'Choose a valid effective date.';
+        else {
+            $result = supabaseRequest('rpc/trikeq_admin_save_fare_entry','POST',[
+                'p_fare_id'=>$id ?: null, 'p_destination_id'=>$destinationId ?: null,
+                'p_name'=>fareInput($_POST,'destination_name'),
+                'p_active'=>fareInput($_POST,'destination_active') === '1',
+                'p_destination_updated_at'=>fareInput($_POST,'destination_updated_at') ?: null,
+                'p_regular'=>$id !== '' ? $regular : null,
+                'p_effective'=>$id !== '' ? $effective : null,
+                'p_fare_updated_at'=>fareInput($_POST,'updated_at') ?: null,
+            ]);
+            if (empty($result['success']) || ($result['data'] ?? null) !== true) $error = $result['error'] ?? 'Save could not be confirmed. Refresh before retrying.';
+            else {
+                $_SESSION['fares_notice']='Changes saved. Existing fare assessments were retained.';
+                $returnQuery=query(array_filter(['toda_id'=>$todaId,'assessment'=>$assessment,'q'=>$search],fn($v)=>$v!==''));
+                header('Location: toda_fares.php'.($returnQuery?'?'.$returnQuery:'').'#destinations',true,303); exit;
+            }
+        }
+    } elseif ($action === 'delete_entry') {
+        $id=fareInput($_POST,'id'); $kind=fareInput($_POST,'kind');
+        if (!fareUuid($id) || !in_array($kind,['fare','destination'],true) || fareInput($_POST,'confirm_delete') !== '1') $error='Confirm which record you want to delete.';
+        else {
+            $result=supabaseRequest('rpc/trikeq_admin_delete_fare_entry','POST',[
+                'p_kind'=>$kind,'p_id'=>$id,'p_expected_updated_at'=>fareInput($_POST,'updated_at') ?: null,
+            ]);
+            if (empty($result['success']) || ($result['data'] ?? null) !== true) $error=$result['error'] ?? 'Delete could not be confirmed. Refresh before retrying.';
+            else {
+                $_SESSION['fares_notice']=$kind==='fare'?'TODA fare deleted. The destination was kept.':'Unused destination deleted.';
+                $returnQuery=query(array_filter(['toda_id'=>$todaId,'assessment'=>$assessment,'q'=>$search],fn($v)=>$v!==''));
+                header('Location: toda_fares.php'.($returnQuery?'?'.$returnQuery:'').'#destinations',true,303); exit;
             }
         }
     } elseif ($action === 'review_fare') {
@@ -167,14 +211,20 @@ h1{font-size:23px;color:#9a3412;margin:0}.subtitle{font-size:13px;margin:5px 0 0
 .fare-panel .unified-fare-table th{padding:11px 10px;text-align:left;background:#fff7ed;color:#9a3412;border-bottom:1px solid #fed7aa;font-size:13px;white-space:nowrap}
 .fare-panel .unified-fare-table td{padding:11px 10px;border-bottom:1px solid #e2e8f0;vertical-align:top;text-align:left}
 .fare-panel .unified-fare-table th:last-child{width:280px;min-width:260px}.fare-panel small{display:block;font-size:12px;margin-top:4px;color:#64748b;overflow-wrap:anywhere}
+.fare-panel small.fare-terminal-address{margin-top:5px;font-size:13px;line-height:1.45;color:#64748b;max-width:260px;white-space:normal;overflow-wrap:anywhere}
 .fare-area-name{font-size:14px;font-weight:500}.fare-muted{font-size:14px;color:#64748b}
 .destination-badge{display:inline-block;border-radius:20px;margin-top:4px;padding:3px 8px;font:600 12px/1.3 Arial,Helvetica,sans-serif}.is-active{color:#166534;background:#dcfce7}.is-inactive{color:#991b1b;background:#fee2e2}.is-scheduled{color:#854d0e;background:#fef9c3}.fare-panel small.fare-destination-inactive{color:#991b1b}
-.fare-panel .fare-row-actions{display:grid;grid-template-columns:62px 62px minmax(0,1fr);align-items:start;gap:8px;min-width:260px;max-width:300px}
+.fare-panel .fare-row-actions{display:grid;grid-template-columns:repeat(3,80px);align-items:start;gap:8px;min-width:260px;max-width:300px}
 .fare-panel .fare-review{display:contents}
-.fare-panel .fare-action-toggle,.fare-panel .fare-disabled-review{display:inline-flex;flex-direction:column;align-items:center;justify-content:center;gap:5px;width:62px;min-height:60px;margin:0;padding:8px 6px;list-style:none;border:1px solid #fed7aa;border-radius:9px;background:#fff7ed;color:#c2410c;font:400 13px/17px Arial,Helvetica,sans-serif;white-space:nowrap;cursor:pointer}
+.fare-panel .fare-action-toggle,.fare-panel .fare-disabled-review{display:inline-flex;flex-direction:column;align-items:center;justify-content:center;gap:5px;width:80px;min-height:60px;margin:0;padding:8px 6px;list-style:none;border:1px solid #fed7aa;border-radius:9px;background:#fff7ed;color:#c2410c;font:400 13px/17px Arial,Helvetica,sans-serif;white-space:nowrap;cursor:pointer}
 .fare-panel .fare-action-toggle,.fare-panel .fare-disabled-review{grid-row:1}
-.fare-panel .fare-review:first-child>.fare-action-toggle{grid-column:1}
-.fare-panel .fare-review:nth-child(2)>.fare-action-toggle,.fare-panel .fare-disabled-review{grid-column:2}
+.fare-panel .fare-edit-action>.fare-action-toggle{grid-column:1}
+.fare-panel .fare-delete-action>.fare-action-toggle{grid-column:3}
+.fare-panel .fare-assessment-action>.fare-action-toggle,.fare-panel .fare-disabled-review{grid-column:2}
+.fare-panel .fare-delete-toggle{background:#fef2f2;border-color:#fecaca;color:#b91c1c}
+.fare-panel .fare-delete-toggle:hover,.fare-panel .fare-delete-toggle[aria-expanded="true"]{background:#fee2e2;border-color:#dc2626}
+.fare-panel .fare-delete-confirm{background:#dc2626;border-color:#dc2626}
+.fare-delete-note{margin:0;font-size:13px;line-height:1.5}
 .fare-panel .fare-row-actions svg{display:block;width:19px!important;height:19px!important;min-width:19px;flex:0 0 19px}
 .fare-panel .fare-disabled-review:disabled{opacity:1;background:#f8fafc;border-color:#e2e8f0;color:#94a3b8;cursor:not-allowed}
 
@@ -234,34 +284,56 @@ else {
 </form><noscript><style>#addDestinationPanel[hidden]{display:flex!important}.fare-add-toggle{display:none!important}</style></noscript>
 <?php if($destinationError): ?><div class="alert" role="alert">Unable to load shared destinations. <?=e($destinationError)?></div><?php endif; ?>
 <?php if($fareLoadError): ?><div class="alert" role="alert">Unable to load submitted fares. <?=e($fareLoadError)?></div><?php endif; ?>
-<p id="fareFilterStatus" class="fare-filter-status" role="status" aria-live="polite" hidden></p><div class="table-wrap" id="fareResults"><table class="unified-fare-table"><thead><tr><th>TODA</th><th>Barangay / Area</th><th>Regular</th><th>Discounted</th><th>Effective / Status</th><th>TMU Assessment</th><th>Action</th></tr></thead><tbody>
+<p id="fareFilterStatus" class="fare-filter-status" role="status" aria-live="polite" hidden></p><div class="table-wrap" id="fareResults"><table class="unified-fare-table"><thead><tr><th>TODA</th><th>Barangay / Area</th><th>Regular</th><th>Effective / Status</th><th>TMU Assessment</th><th>Action</th></tr></thead><tbody>
 <?php foreach($groups as $group): $destination=$group['destination']; $failed=$destination['id']!==null && $failedDestination===$destination['id']; $displayFares=$group['fares']?:[null]; foreach($displayFares as $fare): ?>
-<tr><td><?=e($fare ? ($names[$fare['toda_id']]??'Unknown TODA') : (!empty($destination['toda_id']) ? ($names[$destination['toda_id']]??'Unknown TODA') : 'All TODAs'))?></td>
+<?php $rowTodaId = $fare['toda_id'] ?? $destination['toda_id'] ?? null; ?>
+<tr><td><span><?=e($rowTodaId ? ($names[$rowTodaId]??'Unknown TODA') : 'All TODAs')?></span>
+<?php if($rowTodaId): ?><small class="fare-terminal-address">Terminal: <?=e($terminalAddresses[$rowTodaId]??'')!==''?e($terminalAddresses[$rowTodaId]):'Not provided'?></small><?php endif; ?></td>
 <td><span class="fare-area-name"><?=e($destination['name'])?></span><?php if(!empty($destination['toda_id'])): ?><small>TODA-only destination</small><?php endif; ?><?php if($destination['id']===null): ?><small>Existing fare label</small><?php elseif($destination['active']===false): ?><small class="fare-destination-inactive">Destination inactive</small><?php endif; ?><?php if($fare && count($group['fares'])>1 && trim((string)$fare['origin'])!==''): ?><small>Recorded origin: <?=e($fare['origin'])?></small><?php endif; ?></td>
 <td><?=$fare?'PHP '.e(number_format((float)$fare['regular_fare'],2)):($fareLoadError?'Unavailable':'Not submitted')?></td>
-<td><?=$fare?($fare['discounted_fare']===null?'Not provided':'PHP '.e(number_format((float)$fare['discounted_fare'],2))):'—'?></td>
 <td><?php if($fare): $fareStatus=!$fare['active']?'Inactive':($fare['effective_date']>$today?'Scheduled':'Active'); ?><?=e($fare['effective_date'])?><br><span class="destination-badge <?=$fareStatus==='Active'?'is-active':($fareStatus==='Inactive'?'is-inactive':'is-scheduled')?>"><?=e($fareStatus)?></span><?php else: ?>—<?php endif; ?></td>
 <td><?=e(fareAssessmentLabel($fare['assessment']??'Not assessed'))?><?php if($fare && trim((string)$fare['remarks'])!==''): ?><small><?=e($fare['remarks'])?></small><?php endif; ?></td>
 <td><div class="fare-row-actions">
+<?php $entryFailed = $fare ? $failedFare === $fare['id'] : $failed; ?>
+<div class="fare-review fare-edit-action"><button type="button" class="fare-action-toggle" aria-expanded="<?=$entryFailed?'true':'false'?>" title="Edit destination and fare"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="m16 3 5 5-12 12-6 1 1-6Z"/><path d="m14 5 5 5"/></svg><span>Edit</span></button>
+<form method="POST" class="fare-action-form" <?=$entryFailed?'':'hidden'?>>
+<input type="hidden" name="csrf" value="<?=e($_SESSION['fares_csrf'])?>"><input type="hidden" name="action" value="edit_entry">
+<input type="hidden" name="id" value="<?=e($fare['id']??'')?>"><input type="hidden" name="destination_id" value="<?=e($destination['id']??'')?>">
 <?php if($destination['id']!==null): ?>
-<div class="fare-review"><button type="button" class="fare-action-toggle" aria-expanded="<?=$failed?'true':'false'?>" title="Edit shared destination"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="m16 3 5 5-12 12-6 1 1-6Z"/><path d="m14 5 5 5"/></svg><span>Edit</span></button><form method="POST" class="fare-action-form" <?=$failed?'':'hidden'?>>
-<input type="hidden" name="csrf" value="<?=e($_SESSION['fares_csrf'])?>"><input type="hidden" name="action" value="edit_destination"><input type="hidden" name="id" value="<?=e($destination['id'])?>"><input type="hidden" name="destination_updated_at" value="<?=e($failed?fareInput($_POST,'destination_updated_at'):$destination['updated_at'])?>">
-<label>Barangay / Area<input name="destination_name" maxlength="100" required value="<?=e($failed?fareInput($_POST,'destination_name'):$destination['name'])?>"></label>
-<label>Status<select name="destination_active"><option value="1" <?=($failed?fareInput($_POST,'destination_active')==='1':$destination['active'])?'selected':''?>>Active</option><option value="0" <?=($failed?fareInput($_POST,'destination_active')==='0':!$destination['active'])?'selected':''?>>Inactive</option></select></label>
-<button type="submit" class="fare-save-button">Save Changes</button></form></div>
-<?php endif; ?>
+<input type="hidden" name="destination_updated_at" value="<?=e($entryFailed?fareInput($_POST,'destination_updated_at'):$destination['updated_at'])?>">
+<label>Barangay / Area<input name="destination_name" maxlength="100" required value="<?=e($entryFailed?fareInput($_POST,'destination_name'):$destination['name'])?>"></label>
+<label>Destination Status<select name="destination_active"><option value="1" <?=($entryFailed?fareInput($_POST,'destination_active')==='1':$destination['active'])?'selected':''?>>Active</option><option value="0" <?=($entryFailed?fareInput($_POST,'destination_active')==='0':!$destination['active'])?'selected':''?>>Inactive</option></select></label>
+<small><?=empty($destination['toda_id'])?'Destination name and status changes apply to all TODAs using this shared destination.':'Destination name and status changes apply to this TODA.'?></small>
+<?php else: ?><small>Existing fare label: <?=e($destination['name'])?>. No destination record is linked.</small><?php endif; ?>
 <?php if($fare): ?>
-<div class="fare-review"><button type="button" class="fare-action-toggle" aria-expanded="false" title="Review submitted fare"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M9 4H5v17h14V4h-4"/><path d="M9 2h6v4H9z"/><path d="m8 13 3 3 5-6"/></svg><span>Review</span></button><form method="POST" class="fare-action-form" hidden>
+<input type="hidden" name="updated_at" value="<?=e($entryFailed?fareInput($_POST,'updated_at'):$fare['updated_at'])?>">
+<small>Fare for <?=e($names[$fare['toda_id']]??'Unknown TODA')?></small>
+<label>Regular Fare (PHP)<input type="number" inputmode="decimal" name="regular_fare" min="0.01" max="999999" step="0.01" required value="<?=e($entryFailed?fareInput($_POST,'regular_fare'):number_format((float)$fare['regular_fare'],2,'.',''))?>"></label>
+<label>Effective Date<input type="date" name="effective_date" required value="<?=e($entryFailed?fareInput($_POST,'effective_date'):$fare['effective_date'])?>"></label>
+<small>The price applies only to this TODA. Its existing assessment is retained.</small>
+<?php else: ?><small>No fare has been submitted for this row.</small><?php endif; ?>
+<button type="submit" class="fare-save-button">Save Changes</button>
+</form></div>
+<?php if($fare): ?>
+<div class="fare-review fare-assessment-action"><button type="button" class="fare-action-toggle" aria-expanded="false" title="Review submitted fare"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M9 4H5v17h14V4h-4"/><path d="M9 2h6v4H9z"/><path d="m8 13 3 3 5-6"/></svg><span>Review</span></button><form method="POST" class="fare-action-form" hidden>
 <input type="hidden" name="csrf" value="<?=e($_SESSION['fares_csrf'])?>"><input type="hidden" name="id" value="<?=e($fare['id'])?>"><input type="hidden" name="updated_at" value="<?=e($fare['updated_at'])?>">
 <label>Assessment <select name="assessment" required><option value="">Choose assessment</option><?php foreach(array_slice($allowed,1) as $value): ?><option value="<?=e($value)?>" <?=$fare['assessment']===$value?'selected':''?>><?=e(fareAssessmentLabel($value))?></option><?php endforeach; ?></select></label><label>Remarks <textarea name="remarks" maxlength="2000" rows="3"><?=e($fare['remarks'])?></textarea></label>
 <button type="submit" class="fare-save-button"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m5 12 4 4L19 6"/></svg><span>Save Assessment</span></button>
 </form></div>
 <?php endif; ?>
 <?php if(!$fare): ?><button type="button" class="fare-disabled-review" disabled aria-label="Review unavailable: no fare submitted" title="No fare submitted for the current TODA and assessment filters"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M9 4H5v17h14V4h-4"/><path d="M9 2h6v4H9z"/><path d="m8 13 3 3 5-6"/></svg><span>Review</span></button><?php endif; ?>
+<?php if($fare || $destination['id']!==null): ?>
+<div class="fare-review fare-delete-action"><button type="button" class="fare-action-toggle fare-delete-toggle" aria-expanded="false" title="<?=$fare?'Delete this TODA fare':'Delete unused destination'?>"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7"/></svg><span>Delete</span></button>
+<form method="POST" class="fare-action-form" hidden>
+<input type="hidden" name="csrf" value="<?=e($_SESSION['fares_csrf'])?>"><input type="hidden" name="action" value="delete_entry"><input type="hidden" name="kind" value="<?=$fare?'fare':'destination'?>"><input type="hidden" name="id" value="<?=e($fare['id']??$destination['id'])?>"><input type="hidden" name="updated_at" value="<?=e($fare['updated_at']??$destination['updated_at'])?>">
+<p class="fare-delete-note"><?php if($fare): ?>Delete the fare for <strong><?=e($names[$fare['toda_id']]??'Unknown TODA')?></strong> at <strong><?=e($destination['name'])?></strong>? The destination and other TODA fares will remain. Passengers may see an automatic temporary fare instead.<?php else: ?>Delete <strong><?=e($destination['name'])?></strong>? This is allowed only if no fares or other records reference it, including records hidden by filters.<?php endif; ?> This cannot be undone from this page.</p>
+<button type="submit" name="confirm_delete" value="1" class="fare-save-button fare-delete-confirm">Confirm Delete</button>
+</form></div>
+<?php endif; ?>
 <?php if($destination['id']===null && !$fare): ?><span class="fare-muted">—</span><?php endif; ?>
 </div></td></tr>
 <?php endforeach; endforeach; ?>
-<?php if(!$groups): ?><tr><td colspan="7"><?=$destinationError||$fareLoadError?'Records could not be fully loaded. Please try again.':'No destinations match your filters.'?></td></tr><?php endif; ?>
+<?php if(!$groups): ?><tr><td colspan="6"><?=$destinationError||$fareLoadError?'Records could not be fully loaded. Please try again.':'No destinations match your filters.'?></td></tr><?php endif; ?>
 </tbody></table></div>
 <p class="fare-footnote">TMU destinations apply to all TODAs. President-added destinations are TODA-specific. Fare amounts remain specific to each TODA. TODA and assessment filters narrow submitted fares. TMU assessments use the applicable fare schedule.</p>
 </section></div></main>
